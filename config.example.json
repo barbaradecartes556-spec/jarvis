@@ -1,0 +1,7 @@
+{
+  "provider": "deepseek",
+  "deepseek_api_key": "在这里填 DeepSeek 的 API Key",
+  "deepseek_model": "deepseek-chat",
+  "doubao_api_key": "在这里填火山方舟（豆包）的 API Key",
+  "doubao_model": "在这里填豆包的模型名或接入点 ID"
+}

@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J.A.R.V.I.S.</title>
+<style>
+  :root, body {
+    --rgb: 79,227,255;     /* 主色 RGB：全息青 */
+    --c: rgb(var(--rgb));
+    --c2: #1b8cff;
+    --warn: #ffb547;
+    --glow: 0 0 8px rgba(var(--rgb),.8), 0 0 24px rgba(var(--rgb),.35);
+    --panel: rgba(8, 30, 48, .38);
+    --line: rgba(var(--rgb),.35);
+    --font: "Orbitron", "Rajdhani", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: radial-gradient(ellipse at 50% 40%, #06233a 0%, #020b14 55%, #000 100%);
+    color: #cfefff; font-family: var(--font); user-select: none;
+  }
+  /* 透视网格地面 */
+  .floor { position: fixed; left: -50%; right: -50%; bottom: -10%; height: 60%;
+    background-image:
+      linear-gradient(rgba(var(--rgb),.11) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(var(--rgb),.11) 1px, transparent 1px);
+    background-size: 60px 60px; transform: perspective(500px) rotateX(70deg);
+    transform-origin: 50% 0; animation: floor 6s linear infinite;
+    mask-image: linear-gradient(to bottom, transparent, #000 30%, #000 60%, transparent);
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 30%, #000 60%, transparent); }
+  @keyframes floor { to { background-position: 0 60px; } }
+  /* 扫描线 + 闪烁，模拟全息投影 */
+  .scan { position: fixed; inset: 0; pointer-events: none; z-index: 50;
+    background: repeating-linear-gradient(to bottom, rgba(var(--rgb),.035) 0 1px, transparent 1px 3px);
+    animation: flicker 4s infinite steps(1); }
+  .scan::after { content: ""; position: absolute; left: 0; right: 0; height: 120px;
+    background: linear-gradient(to bottom, transparent, rgba(var(--rgb),.07), transparent);
+    animation: sweep 7s linear infinite; }
+  @keyframes sweep { from { top: -120px; } to { top: 100%; } }
+  @keyframes flicker { 0%,100% { opacity: 1; } 47% { opacity: .85; } 48% { opacity: 1; } 82% { opacity: .92; } }
+  #bg3d { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; mix-blend-mode: screen; }
+  body[data-bg3d] .floor { display: none; }
+  #stars { position: fixed; inset: 0; z-index: 1; pointer-events: none; }
+  #gl { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 4; pointer-events: none; mix-blend-mode: screen; }
+  body[data-gl] .holo .ring, body[data-gl] #core, body[data-gl] .beam, body[data-gl] .base { display: none; }
+  /* ===== 主题背景：韦伯望远镜星云 + 全息处理 ===== */
+  #bg { position: fixed; inset: -6%; z-index: 0; background-size: cover; background-position: center;
+    opacity: 0; transition: opacity 1s; will-change: transform;
+    filter: saturate(1.2) contrast(1.04); }
+  #bgv { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 1.2s; }
+  #bgv.on { opacity: 1; }
+  #bgDrift { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+  body[data-theme="nebula"] #bg { background-image: url(themes/nebula.jpg); opacity: 1; animation: drift 60s ease-in-out infinite alternate; }
+  body[data-theme="cliffs"] #bg { background-image: url(themes/cliffs.jpg); opacity: 1; animation: drift 70s ease-in-out infinite alternate; }
+  @keyframes drift { from { background-position: 40% 45%; scale: 1.04; } to { background-position: 60% 55%; scale: 1.12; } }
+  /* 全息投影质感：边缘暗角 + 色散描边 + 六边形网格 */
+  .holo-veil { position: fixed; inset: 0; z-index: 1; pointer-events: none; opacity: 0; transition: opacity 1s;
+    background:
+      radial-gradient(ellipse at 50% 45%, transparent 60%, rgba(0,4,10,.45) 100%),
+      linear-gradient(90deg, rgba(255,40,90,.05), transparent 8%, transparent 92%, rgba(40,180,255,.06)); }
+  .hex { position: fixed; inset: 0; z-index: 1; pointer-events: none; opacity: 0; transition: opacity 1s;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='97' viewBox='0 0 56 97'%3E%3Cpath d='M28 0 56 16v32L28 64 0 48V16zM28 64v33' fill='none' stroke='white' stroke-width='.6'/%3E%3C/svg%3E");
+    mix-blend-mode: overlay; mask-image: radial-gradient(ellipse at 50% 50%, #000 20%, transparent 75%);
+    -webkit-mask-image: radial-gradient(ellipse at 50% 50%, #000 20%, transparent 75%); }
+  body[data-theme="nebula"] .holo-veil, body[data-theme="cliffs"] .holo-veil { opacity: 1; }
+  body[data-theme="nebula"] .hex, body[data-theme="cliffs"] .hex { opacity: .07; }
+  body[data-theme="nebula"] .floor, body[data-theme="cliffs"] .floor { opacity: .18; }
+  body[data-theme="nebula"] .scan, body[data-theme="cliffs"] .scan { opacity: .5; }
+  body[data-theme="nebula"] header, body[data-theme="cliffs"] header { background: linear-gradient(to bottom, rgba(0,0,0,.45), transparent); }
+  body[data-theme="nebula"] { --rgb: 255,186,96; --c2: #ff5fa2; --holo: 255,135,95; --holo-listen: 255,110,170; }   /* 金色星云：界面暖金，全息球取左金右红之间的珊瑚橙 */
+  body[data-theme="cliffs"] { --rgb: 110,220,255; --c2: #ff9a3c; }   /* 宇宙悬崖：冰蓝全息 */
+  body[data-theme="nebula"] aside, body[data-theme="cliffs"] aside { background: rgba(4,8,18,.42); backdrop-filter: blur(10px); }
+  .credit { position: fixed; left: 16px; bottom: 34px; z-index: 11; font-size: 10px; opacity: 0; letter-spacing: 1px;
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif; pointer-events: none; }
+  body[data-theme="nebula"] .credit, body[data-theme="cliffs"] .credit { opacity: .4; }
+
+  /* 顶部 HUD */
+  header { position: fixed; top: 0; left: 0; right: 0; z-index: 10; display: flex;
+    justify-content: space-between; align-items: center; padding: 18px 28px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(to bottom, rgba(2,20,34,.75), transparent); }
+  .logo { font-size: 22px; letter-spacing: 8px; color: var(--c); text-shadow: var(--glow); font-weight: 700; }
+  .logo small { display: block; font-size: 9px; letter-spacing: 3px; opacity: .6; font-weight: 400; margin-top: 2px; }
+  .hud-right { display: flex; gap: 22px; align-items: center; font-size: 12px; letter-spacing: 2px; }
+  .hud-right .k { opacity: .5; margin-right: 6px; }
+  #clock { color: var(--c); text-shadow: var(--glow); }
+  .icon-btn { background: transparent; border: 1px solid var(--line); color: var(--c);
+    width: 34px; height: 34px; border-radius: 50%; cursor: pointer; font-size: 16px; transition: .2s; }
+  .icon-btn:hover { box-shadow: var(--glow); background: rgba(var(--rgb),.1); }
+
+  /* 中央全息核心 */
+  .stage { position: fixed; left: 0; right: 380px; top: 70px; bottom: 150px; z-index: 5;
+    display: flex; align-items: center; justify-content: center; perspective: 1000px; }
+  .holo { position: relative; width: min(44vh, 38vw); height: min(44vh, 38vw); transform-style: preserve-3d;
+    animation: hover 6s ease-in-out infinite; }
+  @keyframes hover { 0%,100% { translate: 0 -6px; } 50% { translate: 0 6px; } }
+  /* 星云主题：全息球背后压一层暗色"镜片"，让投影从亮星云里跳出来 */
+  #lens { position: fixed; z-index: 3; pointer-events: none; border-radius: 50%; transform: translate(-50%, -50%);
+    background: radial-gradient(ellipse at 50% 45%, rgba(0,4,12,.82) 0%, rgba(0,4,12,.62) 30%, rgba(0,4,12,.25) 52%, transparent 70%);
+    opacity: 0; transition: opacity 1s; }
+  body[data-theme="nebula"] #lens, body[data-theme="cliffs"] #lens { opacity: 1; }
+  #core { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .ring { position: absolute; inset: 0; border-radius: 50%; border: 1px solid var(--line);
+    transform-style: preserve-3d; pointer-events: none; }
+  .r1 { inset: -6%; border: 2px dashed rgba(var(--rgb),.45); animation: spinA 22s linear infinite; }
+  .r2 { inset: -14%; border-color: rgba(var(--rgb),.2); border-top-color: var(--c); border-width: 2px; animation: spinB 9s linear infinite; }
+  .r3 { inset: 6%; border-color: rgba(27,140,255,.35); border-left-color: transparent; border-right-color: transparent; animation: spinC 14s linear infinite reverse; }
+  .r4 { inset: -22%; border: 1px dotted rgba(var(--rgb),.25); animation: spinA 40s linear infinite reverse; }
+  @keyframes spinA { from { transform: rotateX(72deg) rotateZ(0); } to { transform: rotateX(72deg) rotateZ(360deg); } }
+  @keyframes spinB { from { transform: rotateY(64deg) rotateZ(0); } to { transform: rotateY(64deg) rotateZ(360deg); } }
+  @keyframes spinC { from { transform: rotateX(20deg) rotateY(-30deg) rotateZ(0); } to { transform: rotateX(20deg) rotateY(-30deg) rotateZ(360deg); } }
+  body.thinking .r2 { animation-duration: 1.6s; }
+  body.thinking .r1 { animation-duration: 5s; }
+  body.listening .ring { border-color: rgba(255,181,71,.45); }
+  body.listening .r2 { border-top-color: var(--warn); }
+  /* 投影光柱和底座 */
+  .beam { position: absolute; left: 50%; top: 80%; width: 70%; height: 34%; transform: translateX(-50%);
+    background: linear-gradient(to top, rgba(var(--rgb),.22), transparent 85%);
+    clip-path: polygon(42% 100%, 58% 100%, 100% 0, 0 0); filter: blur(2px); pointer-events: none; z-index: -1; }
+  .base { position: absolute; left: 50%; top: 110%; width: 46%; height: 10%; transform: translateX(-50%);
+    border-radius: 50%; border: 1px solid var(--c); box-shadow: var(--glow), inset 0 0 30px rgba(var(--rgb),.5);
+    background: radial-gradient(ellipse, rgba(var(--rgb),.35), transparent 70%); }
+
+  .status { position: absolute; top: calc(124% + 6px); left: 50%; transform: translateX(-50%);
+    font-size: 13px; letter-spacing: 6px; color: var(--c); text-shadow: var(--glow); white-space: nowrap; }
+  body.listening .status { color: var(--warn); text-shadow: 0 0 10px rgba(255,181,71,.8); }
+  /* 左侧全息字幕面板：微微侧转，像投影在空中的一块屏 */
+  .subtitle { position: fixed; left: 34px; top: 50%; width: min(340px, 24vw); z-index: 6;
+    transform: translateY(-50%) perspective(900px) rotateY(24deg); transform-origin: left center;
+    padding: 16px 18px 18px; opacity: 0; transition: opacity .35s;
+    background: linear-gradient(135deg, rgba(var(--rgb),.13), rgba(27,140,255,.04) 60%, rgba(var(--rgb),.10)),
+      repeating-linear-gradient(to bottom, rgba(var(--rgb),.06) 0 1px, transparent 1px 4px);
+    border: 1px solid rgba(var(--rgb),.35); box-shadow: 0 0 24px rgba(var(--rgb),.18), inset 0 0 30px rgba(var(--rgb),.08);
+    clip-path: polygon(0 12px, 12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%);
+    animation: holoFlicker 5s infinite steps(1); }
+  .subtitle.show { opacity: 1; }
+  .subtitle::before { content: ""; position: absolute; left: 0; right: 0; height: 40px; top: -40px;
+    background: linear-gradient(to bottom, transparent, rgba(var(--rgb),.18), transparent); animation: subSweep 3.5s linear infinite; }
+  @keyframes subSweep { to { top: 100%; } }
+  @keyframes holoFlicker { 0%,100% { filter: none; } 62% { filter: brightness(1.35); } 63% { filter: none; } 88% { filter: brightness(.8); } 89% { filter: none; } }
+  .sub-label { font-size: 10px; letter-spacing: 4px; color: var(--c); opacity: .75; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px; }
+  .sub-label::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c); box-shadow: var(--glow); animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  .sub-text { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; line-height: 1.7;
+    color: #dff9ff; text-shadow: 0 0 6px rgba(var(--rgb),.9), 0 0 18px rgba(var(--rgb),.45); word-break: break-word;
+    max-height: 46vh; overflow: hidden; }
+  .subtitle.user .sub-text { color: #f2fdff; text-shadow: 0 0 6px rgba(160,240,255,.9), 0 0 16px rgba(120,200,255,.5); }
+  .subtitle.user { border-color: rgba(160,240,255,.5); }
+  /* 照片主题下：深色毛玻璃底，防止被亮背景吃掉 */
+  body[data-theme="nebula"] .subtitle, body[data-theme="cliffs"] .subtitle {
+    background: linear-gradient(135deg, rgba(4,8,18,.78), rgba(4,8,18,.62) 60%, rgba(4,8,18,.74)),
+      repeating-linear-gradient(to bottom, rgba(var(--rgb),.08) 0 1px, transparent 1px 4px);
+    backdrop-filter: blur(12px) saturate(1.2); -webkit-backdrop-filter: blur(12px) saturate(1.2);
+    border-color: rgba(var(--rgb),.6); box-shadow: 0 0 28px rgba(0,0,0,.55), 0 0 18px rgba(var(--rgb),.22), inset 0 0 24px rgba(var(--rgb),.1); }
+  body[data-theme="nebula"] .sub-label, body[data-theme="cliffs"] .sub-label { opacity: 1; }
+  body[data-theme="nebula"] .sub-text, body[data-theme="cliffs"] .sub-text { color: #fff; text-shadow: 0 0 4px rgba(var(--rgb),.8), 0 1px 3px rgba(0,0,0,.9); }
+
+  /* 右侧对话记录 */
+  aside { position: fixed; top: 86px; right: 20px; bottom: 20px; width: 350px; z-index: 10;
+    background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px);
+    clip-path: polygon(0 18px, 18px 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%);
+    display: flex; flex-direction: column; }
+  aside h3 { font-size: 11px; letter-spacing: 4px; padding: 14px 18px; border-bottom: 1px solid var(--line);
+    color: var(--c); display: flex; justify-content: space-between; }
+  #log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px;
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif; user-select: text; }
+  #log::-webkit-scrollbar { width: 4px; } #log::-webkit-scrollbar-thumb { background: var(--line); }
+  .msg { font-size: 14px; line-height: 1.65; padding: 10px 12px; border-left: 2px solid var(--c);
+    background: rgba(var(--rgb),.06); white-space: pre-wrap; word-break: break-word; }
+  .msg .who { display: block; font-family: var(--font); font-size: 10px; letter-spacing: 3px; opacity: .6; margin-bottom: 4px; }
+  .msg.user { border-left-color: var(--warn); background: rgba(255,181,71,.06); }
+  .msg.err { border-left-color: #ff5d6c; color: #ffb3bb; }
+  .typing-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
+  #text { flex: 1; background: rgba(0,0,0,.35); border: 1px solid var(--line); color: #e9fbff;
+    padding: 9px 10px; font-size: 14px; outline: none; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
+  #text:focus { box-shadow: var(--glow); }
+
+  /* 底部控制 */
+  .controls { position: fixed; left: 0; right: 380px; bottom: 34px; z-index: 10; display: flex;
+    justify-content: center; align-items: center; gap: 28px; }
+  .btn { font-family: var(--font); letter-spacing: 3px; font-size: 12px; color: var(--c); cursor: pointer;
+    background: rgba(var(--rgb),.06); border: 1px solid var(--line); padding: 10px 18px; transition: .2s; }
+  .btn:hover:not(:disabled) { box-shadow: var(--glow); background: rgba(var(--rgb),.14); }
+  .btn:disabled { opacity: .3; cursor: not-allowed; }
+  #mic { width: 78px; height: 78px; border-radius: 50%; font-size: 28px; padding: 0; position: relative;
+    border: 2px solid var(--c); box-shadow: var(--glow); }
+  #mic::after { content: ""; position: absolute; inset: -10px; border-radius: 50%; border: 1px solid var(--line); }
+  body.listening #mic { border-color: var(--warn); color: var(--warn); box-shadow: 0 0 22px rgba(255,181,71,.8);
+    animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { transform: scale(1.08); } }
+  #stop { border-color: rgba(255,93,108,.6); color: #ff8a96; }
+  #stop:hover:not(:disabled) { box-shadow: 0 0 12px rgba(255,93,108,.8); background: rgba(255,93,108,.12); }
+  .hint { position: fixed; left: 0; right: 380px; bottom: 10px; z-index: 10; text-align: center;
+    font-size: 11px; letter-spacing: 2px; opacity: .45; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
+  kbd { border: 1px solid var(--line); padding: 1px 6px; border-radius: 3px; font-family: var(--font); }
+
+  /* 设置面板 */
+  .modal { position: fixed; inset: 0; z-index: 100; background: rgba(0,6,12,.7); display: none;
+    align-items: center; justify-content: center; }
+  .modal.open { display: flex; }
+  .card { width: 460px; max-height: 86vh; overflow-y: auto; background: rgba(6,28,44,.92); border: 1px solid var(--c);
+    box-shadow: var(--glow); padding: 24px; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .card h2 { font-family: var(--font); font-size: 14px; letter-spacing: 5px; color: var(--c); margin-bottom: 18px; }
+  .card label { display: block; font-size: 12px; opacity: .75; margin: 14px 0 6px; }
+  .card select, .card input[type=range], .card textarea { width: 100%; background: rgba(0,0,0,.4);
+    border: 1px solid var(--line); color: #e9fbff; padding: 8px; font-size: 13px; outline: none; font-family: inherit; }
+  .card textarea { height: 90px; resize: vertical; }
+  .card .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+  .card .note { font-size: 11px; opacity: .55; margin-top: 6px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div id="bg"><video id="bgv" muted loop playsinline preload="auto"></video></div>
+<div class="holo-veil"></div>
+<div class="hex"></div>
+<canvas id="stars"></canvas>
+<div class="credit">背景：AI 生成，风格参考韦伯太空望远镜图像</div>
+<div class="floor"></div>
+<div class="scan"></div>
+
+<header>
+  <div class="logo">J.A.R.V.I.S.<small>JUST A RATHER VERY INTELLIGENT SYSTEM · v1.7.6</small></div>
+  <div class="hud-right">
+    <span><span class="k">LINK</span><span id="link">—</span></span>
+    <span><span class="k">TIME</span><span id="clock">--:--:--</span></span>
+    <button class="icon-btn" id="themeBtn" title="切换背景主题">◐</button>
+    <button class="icon-btn" id="openSettings" title="设置">⚙</button>
+  </div>
+</header>
+
+<div class="stage">
+  <div class="holo">
+    <div class="beam"></div>
+    <div class="base"></div>
+    <div class="ring r4"></div><div class="ring r2"></div><div class="ring r1"></div><div class="ring r3"></div>
+    <canvas id="core"></canvas>
+    <div class="status" id="status">STANDBY · 待命</div>
+  </div>
+</div>
+<div class="subtitle" id="subtitle"><div class="sub-label" id="subLabel"></div><div class="sub-text" id="subText"></div></div>
+
+<div class="controls">
+  <button class="btn" id="mic" title="按住说话">🎙</button>
+  <button class="btn" id="stop" disabled title="中断（Esc）">■ 中断</button>
+</div>
+<div class="hint">按住 <kbd>空格</kbd> 或按住麦克风说话，松开发送 · 贾维斯说话时按 <kbd>Esc</kbd> 或点“中断”打断</div>
+
+<aside>
+  <h3><span>TRANSCRIPT · 对话记录</span><span id="count"></span></h3>
+  <div id="log"></div>
+  <div class="typing-row">
+    <input id="text" placeholder="不方便说话时，在这里打字…" autocomplete="off">
+    <button class="btn" id="send">发送</button>
+  </div>
+</aside>
+
+<div class="modal" id="settings">
+  <div class="card">
+    <h2>SETTINGS · 设置</h2>
+    <label>大模型</label>
+    <select id="provider">
+      <option value="deepseek">DeepSeek</option>
+      <option value="doubao">豆包（火山方舟）</option>
+    </select>
+    <div class="note" id="providerNote"></div>
+    <label>背景主题</label>
+    <select id="theme">
+      <option value="grid">经典网格</option>
+      <option value="nebula">金色星云（韦伯 · 蛇夫座ρ）</option>
+      <option value="cliffs">宇宙悬崖（韦伯 · 船底座星云）</option>
+    </select>
+    <label>贾维斯的声音（Chrome 自带的中文声音）</label>
+    <select id="voice"></select>
+    <div class="note">名字里带“男”、Yunxi、Yunyang、Kangkang 的通常是男声。没有中文男声时，会用较低的音调模拟。</div>
+    <label>语速 <span id="rateV"></span></label>
+    <input type="range" id="rate" min="0.7" max="1.5" step="0.05">
+    <label>音调 <span id="pitchV"></span></label>
+    <input type="range" id="pitch" min="0.4" max="1.4" step="0.05">
+    <label>关于 Boss（贾维斯会一直记得这些）</label>
+    <textarea id="notes" placeholder="比如：我叫……，做产品经理，喜欢简短的回答，周末常去跑步。"></textarea>
+    <div class="row">
+      <button class="btn" id="testVoice">试听</button>
+      <button class="btn" id="clearHistory">清空对话记录</button>
+      <button class="btn" id="closeSettings">完成</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ========== 人设 ========== */
+const PERSONA = `你是 J.A.R.V.I.S.（贾维斯），电影《钢铁侠》中托尼·斯塔克的人工智能管家，现在为用户服务。
+称呼：始终称呼用户为“Boss”（直接用英文 Boss，不要翻译成老板）。即使之前的对话里出现过“先生”等别的称呼，也一律改叫 Boss。
+性格：英式管家风格，沉稳、礼貌、克制；专业、博学、懂技术，但从不卖弄；偶尔带一句不动声色的冷幽默或轻微调侃，点到为止；任何情况下都不慌张。
+说话方式：
+- 你的回答会被直接朗读出来，所以用自然的口语中文，不要用 Markdown、列表符号、表格、代码块或表情符号。
+- 先给结论，再视需要补充一两句；默认控制在三四句话以内，Boss 要求详细时再展开。
+- 数字、单位用便于朗读的方式表达。
+- 不确定的事情直说不确定，不编造。
+你是一个对话助手，目前不能操作 Boss 的电脑或设备；被要求做这类事情时，礼貌说明现在还做不到。`;
+
+/* ========== 存储 ========== */
+const LS = {
+  get: (k, d) => { try { const v = localStorage.getItem('jarvis.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set: (k, v) => localStorage.setItem('jarvis.' + k, JSON.stringify(v)),
+};
+let history = LS.get('history', []);           // [{role, content}]
+const settings = Object.assign({ provider: null, voice: '', rate: 1.05, pitch: 0.8, notes: '', theme: 'nebula' }, LS.get('settings', {}));
+const saveSettings = () => LS.set('settings', settings);
+const MAX_CONTEXT = 24;                          // 每次带给大模型的最近消息条数
+
+/* ========== DOM ========== */
+const $ = id => document.getElementById(id);
+const logEl = $('log'), statusEl = $('status'), subEl = $('subtitle');
+
+function addMsg(role, text) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + role;
+  const who = role === 'user' ? 'BOSS' : role === 'err' ? 'SYSTEM · 系统' : 'J.A.R.V.I.S.';
+  d.innerHTML = `<span class="who">${who}</span>`;
+  const body = document.createElement('span'); body.textContent = text; d.appendChild(body);
+  logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+  $('count').textContent = history.length ? history.length + ' 条' : '';
+  return body;
+}
+function renderHistory() {
+  logEl.innerHTML = '';
+  history.forEach(m => addMsg(m.role === 'user' ? 'user' : 'bot', m.content));
+  if (!history.length) addMsg('bot', 'Boss，系统已上线。按住空格就可以和我说话。');
+}
+
+/* ========== 状态机：idle / listening / thinking / speaking ========== */
+let state = 'idle';
+const STATUS_TEXT = { idle: 'STANDBY · 待命', listening: 'LISTENING · 聆听中', thinking: 'PROCESSING · 思考中', speaking: 'RESPONDING · 回答中' };
+function setState(s) {
+  state = s;
+  document.body.className = s;
+  statusEl.textContent = STATUS_TEXT[s];
+  $('stop').disabled = !(s === 'thinking' || s === 'speaking');
+  $('mic').disabled = s === 'thinking' || s === 'speaking';
+  $('send').disabled = s !== 'idle';
+}
+
+/* ========== 语音识别（Chrome 自带） ========== */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, finalText = '', interimText = '', wantSend = false, gotAudio = false, hadError = false;
+function initRecognition() {
+  if (!SR) return null;
+  const r = new SR();
+  r.lang = 'zh-CN'; r.continuous = true; r.interimResults = true;
+  r.onaudiostart = () => { gotAudio = true; };
+  r.onresult = e => {
+    interimText = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalText += t; else interimText += t;
+    }
+    showSub(finalText + interimText, true);
+  };
+  r.onerror = e => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    hadError = true;
+    const tips = { 'not-allowed': '麦克风权限被拒绝了，请在地址栏左侧允许麦克风后刷新。', 'network': '语音识别连不上：Chrome 会把声音发给谷歌识别，在中国大陆需要能访问谷歌。语音输入暂时用不了的话，可以先打字聊天。', 'audio-capture': '没检测到麦克风。' };
+    addMsg('err', tips[e.error] || ('语音识别出错：' + e.error));
+  };
+  r.onend = () => {
+    stopMeter();
+    // 还按着空格时识别就自己结束了（长时间没出声或断网）：按松开处理，避免卡住
+    if (state === 'listening') { wantSend = true; setState('thinking'); }
+    if (!wantSend) return;
+    wantSend = false;
+    const text = (finalText + interimText).trim();
+    if (text) { ask(text); return; }
+    setState('idle'); showSub('');
+    if (!hadError) addMsg('err', gotAudio
+      ? '没听清，Boss 可以按住空格再说一次，说完再松开。'
+      : '没有收到任何识别结果。最常见的原因是 Chrome 的语音识别要连谷歌的服务器，在中国大陆不开代理就连不上；也可能是麦克风没开或被别的程序占用。打字聊天不受影响。');
+  };
+  return r;
+}
+function startListening() {
+  if (state !== 'idle') return;
+  if (!SR) { addMsg('err', '这个浏览器不支持语音识别，请用 Chrome 打开，或者直接打字。'); return; }
+  unlockSpeech();
+  rec = rec || initRecognition();
+  finalText = ''; interimText = ''; wantSend = false; gotAudio = false; hadError = false;
+  try { rec.start(); } catch (e) { /* 已在识别中 */ }
+  setState('listening'); showSub('', true); startMeter();
+}
+function stopListening() {
+  if (state !== 'listening') return;
+  wantSend = true;
+  setState('thinking');
+  try { rec.stop(); } catch (e) { rec.onend(); }
+}
+
+/* ========== 麦克风音量（驱动全息核心跳动） ========== */
+let level = 0, meterStream = null, meterCtx = null, analyser = null;
+async function startMeter() {
+  try {
+    if (!meterStream) {
+      meterStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      meterCtx = new AudioContext();
+      analyser = meterCtx.createAnalyser(); analyser.fftSize = 512;
+      meterCtx.createMediaStreamSource(meterStream).connect(analyser);
+    }
+    meterCtx.resume();
+  } catch (e) { /* 没有权限就只用动画 */ }
+}
+function stopMeter() { if (meterCtx) meterCtx.suspend(); }
+const buf = new Uint8Array(256);
+function micLevel() {
+  if (!analyser || state !== 'listening') return 0;
+  analyser.getByteTimeDomainData(buf);
+  let s = 0; for (const v of buf) s += (v - 128) ** 2;
+  return Math.min(1, Math.sqrt(s / buf.length) / 30);
+}
+
+/* ========== 语音合成（Chrome 自带） ========== */
+let voices = [], speakPulse = 0, speechUnlocked = false;
+function loadVoices() {
+  voices = speechSynthesis.getVoices();
+  const zh = voices.filter(v => /^zh|cmn/i.test(v.lang));
+  const sel = $('voice'); sel.innerHTML = '';
+  (zh.length ? zh : voices).forEach(v => {
+    const o = document.createElement('option'); o.value = v.name; o.textContent = `${v.name}（${v.lang}）`; sel.appendChild(o);
+  });
+  if (!settings.voice || !voices.find(v => v.name === settings.voice)) {
+    const male = zh.find(v => /男|male|Yunxi|Yunyang|Yunjian|Yunhao|Kangkang|Yunfeng/i.test(v.name));
+    const pick = male || zh.find(v => /zh-CN/i.test(v.lang)) || zh[0];
+    if (pick) settings.voice = pick.name;
+  }
+  sel.value = settings.voice;
+}
+speechSynthesis.onvoiceschanged = loadVoices; loadVoices();
+function unlockSpeech() {   // Chrome 要求先有一次用户操作，才允许朗读
+  if (speechUnlocked) return; speechUnlocked = true;
+  const u = new SpeechSynthesisUtterance(''); u.volume = 0; speechSynthesis.speak(u);
+}
+const speakable = t => t.replace(/```[\s\S]*?```/g, '').replace(/[*#`>_~|\[\]]/g, '').replace(/\s+/g, ' ').trim();
+let pendingUtterances = 0, streamDone = true, turnId = 0;
+const liveUtterances = new Set();   // 保存朗读对象，防止 Chrome 提前回收导致“说完了”的通知丢失
+function speak(text, myTurn) {
+  const t = speakable(text); if (!t || !speechSynthesis.getVoices().length) return;  // 没有可用声音时只显示文字
+  const u = new SpeechSynthesisUtterance(t);
+  const v = voices.find(v => v.name === settings.voice); if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'zh-CN';
+  u.rate = settings.rate; u.pitch = settings.pitch;
+  u.onstart = () => { if (myTurn === turnId) { setState('speaking'); showSub(t); } };
+  u.onboundary = () => { speakPulse = 1; };
+  u.onend = u.onerror = () => { liveUtterances.delete(u); if (myTurn !== turnId) return; pendingUtterances--; maybeFinish(); };
+  liveUtterances.add(u); pendingUtterances++;
+  speechSynthesis.speak(u);
+}
+function maybeFinish() {
+  if (streamDone && pendingUtterances <= 0 && (state === 'speaking' || state === 'thinking')) { setState('idle'); setTimeout(() => state === 'idle' && showSub(''), 2500); }
+}
+
+/* ========== 调用大模型（流式，边生成边朗读） ========== */
+let controller = null;
+async function ask(text) {
+  const myTurn = ++turnId;
+  history.push({ role: 'user', content: text }); LS.set('history', history);
+  addMsg('user', text); showSub(text, true);
+  setState('thinking');
+  streamDone = false; pendingUtterances = 0;
+
+  let sys = PERSONA + `\n当前时间：${new Date().toLocaleString('zh-CN', { hour12: false })}。`;
+  if (settings.notes.trim()) sys += `\n关于 Boss 的已知信息（请自然地运用，不要逐条复述）：\n${settings.notes.trim()}`;
+  const messages = [{ role: 'system', content: sys }, ...history.slice(-MAX_CONTEXT)];
+
+  controller = new AbortController();
+  let full = '', pending = '', bodyEl = null;
+  const flush = force => {
+    // 按句子切分送去朗读：遇到句号、问号、感叹号、分号、换行就切；超过 40 字的长句在逗号处切
+    while (pending) {
+      let cut = -1;
+      for (let i = 0; i < pending.length; i++) {
+        const ch = pending[i];
+        if ('。！？!?；;\n'.includes(ch) || (i >= 40 && '，,、'.includes(ch))) { cut = i + 1; break; }
+      }
+      if (cut < 0) { if (!force) return; cut = pending.length; }
+      const seg = pending.slice(0, cut); pending = pending.slice(cut);
+      if (seg.trim()) speak(seg, myTurn);
+    }
+  };
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+      body: JSON.stringify({ provider: settings.provider, messages }),
+    });
+    if (!res.ok) {
+      let msg = '请求失败 ' + res.status;
+      try { msg = (await res.json()).error || msg; } catch {}
+      throw new Error(msg);
+    }
+    const reader = res.body.getReader(); const dec = new TextDecoder();
+    let sse = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      sse += dec.decode(value, { stream: true });
+      const lines = sse.split('\n'); sse = lines.pop();
+      for (const line of lines) {
+        const l = line.trim();
+        if (!l.startsWith('data:')) continue;
+        const data = l.slice(5).trim();
+        if (data === '[DONE]') continue;
+        let delta = '';
+        try { delta = JSON.parse(data).choices?.[0]?.delta?.content || ''; } catch { continue; }
+        if (!delta) continue;
+        if (!bodyEl) bodyEl = addMsg('bot', '');
+        full += delta; pending += delta; bodyEl.textContent = full; logEl.scrollTop = logEl.scrollHeight;
+        flush(false);
+      }
+    }
+    flush(true);
+    if (!full) throw new Error('大模型没有返回内容');
+    history.push({ role: 'assistant', content: full }); LS.set('history', history);
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      if (full) { history.push({ role: 'assistant', content: full + '……（被打断）' }); LS.set('history', history); }
+    } else {
+      addMsg('err', e.message.includes('Failed to fetch') ? '连不上本地服务。请确认已经运行 python3 server.py，并且是通过 http://localhost:8765 打开的这个页面。' : e.message);
+      setState('idle');
+    }
+  } finally {
+    if (myTurn === turnId) { streamDone = true; maybeFinish(); }
+  }
+  $('count').textContent = history.length + ' 条';
+}
+
+function interrupt() {
+  if (state !== 'thinking' && state !== 'speaking') return;
+  turnId++;                       // 让旧回答的回调全部失效
+  if (controller) controller.abort();
+  speechSynthesis.cancel(); liveUtterances.clear();
+  if (rec && wantSend) { wantSend = false; try { rec.abort(); } catch {} }
+  pendingUtterances = 0; streamDone = true;
+  setState('idle'); showSub('');
+}
+
+/* ========== 字幕 ========== */
+function showSub(t, isUser) {
+  const listening = state === 'listening';
+  $('subLabel').textContent = isUser ? (listening ? 'VOICE INPUT · 正在聆听' : 'BOSS') : 'J.A.R.V.I.S. · 回答';
+  $('subText').textContent = t || (listening ? '……' : '');
+  subEl.classList.toggle('user', !!isUser);
+  subEl.classList.toggle('show', !!t || listening);
+}
+
+/* ========== 输入：空格 / 鼠标按住说话，Esc / 按钮中断 ========== */
+const typing = () => document.activeElement === $('text') || $('settings').classList.contains('open');
+let spaceDown = false;
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { if ($('settings').classList.contains('open')) closeSettings(); else interrupt(); return; }
+  if (e.code !== 'Space' || typing()) return;
+  e.preventDefault();
+  if (e.repeat || spaceDown) return;
+  spaceDown = true; startListening();
+});
+document.addEventListener('keyup', e => {
+  if (e.code !== 'Space' || !spaceDown) return;
+  e.preventDefault(); spaceDown = false; stopListening();
+});
+window.addEventListener('blur', () => { if (spaceDown) { spaceDown = false; stopListening(); } });
+const mic = $('mic');
+mic.addEventListener('pointerdown', e => { e.preventDefault(); mic.setPointerCapture(e.pointerId); startListening(); });
+mic.addEventListener('pointerup', () => stopListening());
+mic.addEventListener('pointercancel', () => stopListening());
+$('stop').onclick = interrupt;
+const sendText = () => { const t = $('text').value.trim(); if (!t || state !== 'idle') return; unlockSpeech(); $('text').value = ''; ask(t); };
+$('send').onclick = sendText;
+$('text').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) sendText(); });
+
+/* ========== 设置面板 ========== */
+let serverStatus = null;
+function openSettings() {
+  $('theme').value = settings.theme; $('provider').value = settings.provider; $('rate').value = settings.rate; $('pitch').value = settings.pitch; $('notes').value = settings.notes;
+  $('rateV').textContent = settings.rate; $('pitchV').textContent = settings.pitch; updateProviderNote();
+  $('settings').classList.add('open');
+}
+function closeSettings() {
+  settings.provider = $('provider').value; settings.voice = $('voice').value;
+  settings.rate = +$('rate').value; settings.pitch = +$('pitch').value; settings.notes = $('notes').value;
+  saveSettings(); $('settings').classList.remove('open'); updateLink();
+}
+function updateProviderNote() {
+  const p = serverStatus?.providers?.[$('provider').value];
+  $('providerNote').textContent = !serverStatus ? '本地服务没连上。' : p.has_key ? `已配置，模型：${p.model || '（未填写）'}` : `还没填这个服务的 Key。请在 ${serverStatus.config || '个人文件夹/Jarvis/config.json'} 里填好，保存后刷新页面。`;
+}
+$('openSettings').onclick = openSettings; $('closeSettings').onclick = closeSettings;
+$('provider').onchange = updateProviderNote;
+$('rate').oninput = e => $('rateV').textContent = e.target.value;
+$('pitch').oninput = e => $('pitchV').textContent = e.target.value;
+$('testVoice').onclick = () => {
+  settings.voice = $('voice').value; settings.rate = +$('rate').value; settings.pitch = +$('pitch').value;
+  if (state !== 'idle') return;
+  speechSynthesis.cancel(); unlockSpeech(); pendingUtterances = 0; streamDone = true; speak('Boss，随时为您效劳。', turnId);
+};
+$('clearHistory').onclick = () => { if (confirm('确定清空所有对话记录吗？“关于 Boss”的备忘会保留。')) { history = []; LS.set('history', history); renderHistory(); } };
+async function updateLink() {
+  try {
+    serverStatus = await (await fetch('/api/status', { cache: 'no-store' })).json();
+    if (serverStatus.version !== APP_VERSION && !updateLink.warned) {
+      updateLink.warned = true;
+      addMsg('err', `Boss，现在连着的是另一个旧版本的贾维斯服务（${serverStatus.version || '旧版'}，位置：${serverStatus.dir || '未知'}）。请关掉所有贾维斯的终端窗口，再双击新文件夹里的“启动贾维斯.command”。`);
+    }
+    if (!settings.provider) { settings.provider = serverStatus.default_provider || 'deepseek'; saveSettings(); }
+    const p = serverStatus.providers[settings.provider];
+    $('link').textContent = (settings.provider === 'doubao' ? 'DOUBAO' : 'DEEPSEEK') + (p?.has_key ? ' · ONLINE' : ' · NO KEY');
+  } catch { serverStatus = null; $('link').textContent = 'OFFLINE'; if (!settings.provider) settings.provider = 'deepseek'; }
+}
+
+
+/* ========== 背景主题 ========== */
+const THEMES = ['grid', 'nebula', 'cliffs'];
+const APP_VERSION = '1.7.6';
+let themeRGB = '79,227,255', holoRGB = themeRGB, holoListenRGB = '255,181,71';
+function applyTheme(t) {
+  if (!THEMES.includes(t)) t = 'grid';
+  settings.theme = t; saveSettings();
+  document.body.dataset.theme = t;
+  const cs = getComputedStyle(document.body);
+  themeRGB = cs.getPropertyValue('--rgb').trim() || '79,227,255';
+  holoRGB = cs.getPropertyValue('--holo').trim() || themeRGB;             // 全息球可以单独配色
+  holoListenRGB = cs.getPropertyValue('--holo-listen').trim() || '255,181,71';
+  makeSparkles();
+  setBgVideo(t);
+}
+/* 动态背景：themes/ 下有同名 mp4 就循环播放，没有就用静态图 */
+function setBgVideo(t) {
+  const v = $('bgv');
+  v.classList.remove('on'); v.pause();
+  if (t === 'grid') { v.removeAttribute('src'); v.load(); return; }
+  v.oncanplay = () => { v.playbackRate = .6; v.play().then(() => v.classList.add('on')).catch(() => {}); };
+  v.onerror = () => v.classList.remove('on');
+  // 保险：快播完时手动跳回开头，防止某些情况下 loop 停在最后一帧
+  v.ontimeupdate = () => { if (v.duration && v.currentTime > v.duration - .25) { v.currentTime = 0; v.play().catch(() => {}); } };
+  v.onended = () => { v.currentTime = 0; v.play().catch(() => {}); };
+  // 先整段下载成本地 blob 再播放：本地服务不支持分段读取，直接给地址时 Chrome 循环可能卡在最后一帧
+  const want = t;
+  fetch('themes/' + t + '.mp4').then(r => r.ok ? r.blob() : Promise.reject()).then(b => {
+    if (settings.theme !== want) return;
+    if (bgvURL) URL.revokeObjectURL(bgvURL);
+    bgvURL = URL.createObjectURL(b); v.src = bgvURL;
+  }).catch(() => {});
+}
+let bgvURL = null;
+$('themeBtn').onclick = () => applyTheme(THEMES[(THEMES.indexOf(settings.theme) + 1) % THEMES.length]);
+$('theme').onchange = e => applyTheme(e.target.value);
+/* 鼠标视差：背景、星芒、核心分层移动，产生立体感 */
+let mx = 0, my = 0, pmx = 0, pmy = 0;
+addEventListener('pointermove', e => { mx = e.clientX / innerWidth - .5; my = e.clientY / innerHeight - .5; });
+/* 韦伯式八芒星：前景闪烁的亮星 */
+let sparkles = [];
+function makeSparkles() {
+  const n = settings.theme === 'grid' ? 0 : 16;
+  sparkles = Array.from({ length: n }, () => ({ x: Math.random(), y: Math.random() * .9, r: 6 + Math.random() * 22,
+    ph: Math.random() * 6.28, sp: .6 + Math.random() * 1.4, z: .3 + Math.random() * .7 }));
+}
+function drawSpark(c, x, y, r, a, rgb) {
+  c.save(); c.translate(x, y); c.globalCompositeOperation = 'lighter';
+  const g = c.createRadialGradient(0, 0, 0, 0, 0, r * .35);
+  g.addColorStop(0, `rgba(255,255,255,${a})`); g.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = g; c.beginPath(); c.arc(0, 0, r * .35, 0, 6.283); c.fill();
+  const spikes = [[0, 1], [Math.PI / 3, .7], [2 * Math.PI / 3, .7], [Math.PI / 2, .45]];   // 韦伯的六芒 + 两道短芒
+  for (const [ang, len] of spikes) {
+    c.rotate(0); const L = r * len * 2;
+    const lg = c.createLinearGradient(-L * Math.cos(ang), -L * Math.sin(ang), L * Math.cos(ang), L * Math.sin(ang));
+    lg.addColorStop(0, `rgba(${rgb},0)`); lg.addColorStop(.5, `rgba(255,255,255,${a})`); lg.addColorStop(1, `rgba(${rgb},0)`);
+    c.strokeStyle = lg; c.lineWidth = Math.max(1, r / 14);
+    c.beginPath(); c.moveTo(-L * Math.cos(ang), -L * Math.sin(ang)); c.lineTo(L * Math.cos(ang), L * Math.sin(ang)); c.stroke();
+  }
+  c.restore();
+}
+/* 给 3D 全息模块读取的状态 */
+window.JARVIS = {
+  get amp() { return amp; }, get state() { return state; }, get pm() { return [pmx, pmy]; },
+  get rgb() { return state === 'listening' ? holoListenRGB : holoRGB; },
+};
+
+/* ========== 时钟 ========== */
+setInterval(() => $('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }), 1000);
+
+/* ========== 背景星尘 ========== */
+const stars = $('stars'), sctx = stars.getContext('2d');
+let starList = [];
+function resizeStars() {
+  stars.width = innerWidth * devicePixelRatio; stars.height = innerHeight * devicePixelRatio;
+  starList = Array.from({ length: 140 }, () => ({ x: Math.random(), y: Math.random(), z: Math.random(), s: Math.random() * .0004 + .0001 }));
+}
+addEventListener('resize', resizeStars); resizeStars();
+
+/* ========== 全息核心：旋转的粒子球 ========== */
+const core = $('core'), ctx = core.getContext('2d'), holoEl = document.querySelector('.holo');
+const N = 900, pts = [];
+for (let i = 0; i < N; i++) {             // 斐波那契球面均匀取点
+  const y = 1 - (i / (N - 1)) * 2, r = Math.sqrt(1 - y * y), th = i * Math.PI * (3 - Math.sqrt(5));
+  pts.push([Math.cos(th) * r, y, Math.sin(th) * r, Math.random() * Math.PI * 2]);
+}
+let rotY = 0, rotX = 0.35, amp = 0, t0 = performance.now();
+function frame(now) {
+  const t = (now - t0) / 1000;
+  // 视差
+  pmx += (mx - pmx) * .05; pmy += (my - pmy) * .05;
+  $('bg').style.transform = `translate(${-pmx * 30}px, ${-pmy * 20}px)`;
+  holoEl.style.transform = `rotateY(${pmx * 14}deg) rotateX(${-pmy * 10}deg)`;
+  // 背景
+  sctx.clearRect(0, 0, stars.width, stars.height);
+  for (const s of sparkles) {
+    const a = .35 + .65 * Math.max(0, Math.sin(t * s.sp + s.ph)) ** 3;
+    drawSpark(sctx, (s.x - pmx * .04 * s.z) * stars.width, (s.y - pmy * .03 * s.z) * stars.height, s.r * devicePixelRatio * (.7 + a * .4), a, themeRGB);
+  }
+  for (const s of starList) {
+    s.y -= s.s; if (s.y < 0) { s.y = 1; s.x = Math.random(); }
+    sctx.fillStyle = `rgba(${themeRGB},${.15 + s.z * .5})`;
+    sctx.fillRect(s.x * stars.width, s.y * stars.height, 1 + s.z * 1.5, 1 + s.z * 1.5);
+  }
+  // 核心
+  const w = core.clientWidth * devicePixelRatio, h = core.clientHeight * devicePixelRatio;
+  if (core.width !== w) { core.width = w; core.height = h; }
+  ctx.clearRect(0, 0, w, h);
+  let target = 0.08 + Math.sin(t * 1.5) * 0.03;
+  if (state === 'listening') target = 0.12 + micLevel() * 0.9;
+  if (state === 'thinking') target = 0.18 + Math.sin(t * 8) * 0.08;
+  if (state === 'speaking') { speakPulse *= 0.9; target = 0.2 + speakPulse * 0.45 + Math.abs(Math.sin(t * 9)) * 0.15; }
+  amp += (target - amp) * 0.15;
+  rotY += state === 'thinking' ? 0.03 : 0.006;
+  if (document.body.dataset.gl) { requestAnimationFrame(frame); return; }
+  const cx = w / 2, cy = h / 2, R = w * 0.3, col = state === 'listening' ? '255,181,71' : themeRGB;
+  const cyY = Math.cos(rotY), syY = Math.sin(rotY), cxX = Math.cos(rotX), sxX = Math.sin(rotX);
+  // 内核光晕
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * (1.1 + amp));
+  g.addColorStop(0, `rgba(${col},${.35 + amp * .4})`); g.addColorStop(.35, `rgba(${col},.08)`); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  for (const [x0, y0, z0, ph] of pts) {
+    const k = 1 + amp * (0.6 + 0.4 * Math.sin(ph + t * 6 + y0 * 4));
+    let x = x0 * cyY - z0 * syY, z = x0 * syY + z0 * cyY, y = y0;
+    const y2 = y * cxX - z * sxX; z = y * sxX + z * cxX; y = y2;
+    const p = 2.6 / (2.6 + z), sx = cx + x * R * k * p, sy = cy + y * R * k * p;
+    const a = 0.15 + (1 - (z + 1) / 2) * 0.85;
+    ctx.fillStyle = `rgba(${col},${a})`;
+    const sz = (1 + (1 - z) * 0.9) * devicePixelRatio;
+    ctx.fillRect(sx, sy, sz, sz);
+  }
+  // 赤道刻度环
+  ctx.strokeStyle = `rgba(${col},.5)`; ctx.lineWidth = devicePixelRatio;
+  for (let i = 0; i < 72; i++) {
+    const an = i / 72 * Math.PI * 2 + t * 0.2, r1 = R * 1.32, r2 = r1 + (i % 6 === 0 ? 14 : 6) * devicePixelRatio;
+    ctx.beginPath(); ctx.moveTo(cx + Math.cos(an) * r1, cy + Math.sin(an) * r1); ctx.lineTo(cx + Math.cos(an) * r2, cy + Math.sin(an) * r2); ctx.stroke();
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ========== 启动 ========== */
+applyTheme(settings.theme); setState('idle'); renderHistory(); updateLink();
+// 开场白：进页面先在左侧字幕框打个招呼（浏览器不允许未经点击就自动出声，所以只显示文字）
+{
+  const h = new Date().getHours();
+  const greet = h < 5 ? '这么晚了还在忙，Boss。' : h < 11 ? '早上好，Boss。' : h < 14 ? '中午好，Boss。' : h < 18 ? '下午好，Boss。' : '晚上好，Boss。';
+  setTimeout(() => { if (state === 'idle') showSub(greet + '我是贾维斯，系统运行正常，随时听候吩咐。'); }, 600);
+}
+if (!SR) addMsg('err', '这个浏览器不支持语音识别，建议用 Chrome 打开。');
+if (location.protocol === 'file:') addMsg('err', '现在是直接双击打开的网页，这样麦克风和大模型都用不了。请先运行 python3 server.py，再用 Chrome 打开 http://localhost:8765 。');
+</script>
+<script type="importmap">{ "imports": { "three": "./vendor/three/three.module.min.js", "three/addons/": "./vendor/three/addons/" } }</script>
+<script type="module" src="./bg3d.js"></script>
+<script type="module" src="./holo3d.js"></script>
+</body>
+</html>
