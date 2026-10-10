@@ -1,6 +1,22 @@
+# Real credentials and local configuration (at any directory level).
 config.json
+config.json.*
+config.*.json
+!config.example.json
 .env
 .env.*
+!.env.example
+!.env.sample
+secrets.json
+secrets/
+*.pem
+*.key
+
+# Local caches, logs, and operating-system files.
 __pycache__/
 *.py[cod]
+.venv/
+venv/
+*.log
 .DS_Store
+Thumbs.db

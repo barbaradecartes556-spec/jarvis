@@ -3,7 +3,7 @@
 用法：先在 config.json 里填好 Key，然后运行  python3 server.py ，再用 Chrome 打开 http://localhost:8765
 只用到 Python 自带的库，不需要安装任何东西。
 """
-import json, os, sys, urllib.request, urllib.error
+import base64, json, os, sys, uuid, urllib.request, urllib.error
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -11,7 +11,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 USER_CONFIG = os.path.join(os.path.expanduser("~"), "Jarvis", "config.json")
 CONFIG_PATH = os.environ.get("JARVIS_CONFIG") or (USER_CONFIG if os.path.exists(USER_CONFIG) else os.path.join(HERE, "config.json"))
 PORT = int(os.environ.get("JARVIS_PORT", "8765"))
-VERSION = "1.7.6"
+VERSION = "1.9.1"
 
 PROVIDERS = {
     "deepseek": {
@@ -21,7 +21,7 @@ PROVIDERS = {
         "default_model": "deepseek-chat",
     },
     "doubao": {
-        "url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+        "url": os.environ.get("JARVIS_DOUBAO_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions"),
         "key_field": "doubao_api_key",
         "model_field": "doubao_model",
         "default_model": "",
@@ -37,6 +37,35 @@ def clean_key(raw):
     if not k.isascii() or " " in k:
         return None
     return k
+
+
+VOLC_TTS_URL = os.environ.get("JARVIS_VOLC_TTS_URL", "https://openspeech.bytedance.com/api/v3/tts/unidirectional")
+VOLC_ASR_URL = os.environ.get("JARVIS_VOLC_ASR_URL", "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash")
+DEFAULT_VOICE = "zh_male_M392_conversation_wvae_bigtts"
+
+
+def volc_auth(cfg):
+    """火山引擎语音的鉴权请求头：新版控制台用 API Key，旧版用 APPID + Access Token。都没填好返回 None。"""
+    api_key = clean_key(cfg.get("volc_api_key", ""))
+    if api_key:
+        return {"X-Api-Key": api_key}
+    app_id = clean_key(str(cfg.get("volc_app_id", "")))
+    token = clean_key(cfg.get("volc_access_token", ""))
+    if app_id and token:
+        return {"X-Api-App-Id": app_id, "X-Api-App-Key": app_id, "X-Api-Access-Key": token}
+    return None
+
+
+def tts_resources(cfg, speaker):
+    """按音色选模型版本：2.0 音色（带 uranus）用 seed-tts-2.0，复刻音色（S_ 开头）用 seed-icl，其余用 1.0。"""
+    forced = (cfg.get("volc_resource_id") or "").strip()
+    if forced:
+        return [forced]
+    if speaker.startswith("S_"):
+        return ["seed-icl-2.0", "seed-icl-1.0"]
+    if "uranus" in speaker or "saturn" in speaker:
+        return ["seed-tts-2.0"]
+    return ["seed-tts-1.0", "seed-tts-2.0"]
 
 
 def load_config():
@@ -67,7 +96,9 @@ class Handler(SimpleHTTPRequestHandler):
                     "has_key": bool(clean_key(cfg.get(p["key_field"], ""))),
                     "model": cfg.get(p["model_field"], "") or p["default_model"],
                 }
-            self._json(200, {"providers": status, "default_provider": cfg.get("provider", "deepseek"), "version": VERSION, "dir": HERE, "config": CONFIG_PATH})
+            self._json(200, {"providers": status, "default_provider": cfg.get("provider", "deepseek"), "version": VERSION, "dir": HERE, "config": CONFIG_PATH,
+                                   "volc": {"ready": volc_auth(cfg) is not None, "voice": cfg.get("volc_voice_type", "") or DEFAULT_VOICE,
+                                            "tts": cfg.get("volc_tts", True) is not False, "asr": cfg.get("volc_asr", True) is not False}})
             return
         # 只允许访问这几个静态文件，其他路径（包括 config.json 的各种变体写法）一律 404
         if path in ("/", "/index.html"):
@@ -86,7 +117,7 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_POST(self):
-        if self.path != "/api/chat":
+        if self.path not in ("/api/chat", "/api/tts", "/api/asr"):
             self.send_error(404)
             return
         # 只接受本页面发来的请求，防止别的网站偷偷用你的 Key
@@ -94,6 +125,10 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._host_ok() or (origin is not None and origin not in self._allowed()):
             self._json(403, {"error": "拒绝了来自其他网页的请求"})
             return
+        if self.path == "/api/tts":
+            return self._tts()
+        if self.path == "/api/asr":
+            return self._asr()
         try:
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -125,18 +160,27 @@ class Handler(SimpleHTTPRequestHandler):
             "stream": True,
             "temperature": body.get("temperature", 0.7),
         }
-        req = urllib.request.Request(
-            p["url"],
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Authorization": "Bearer " + key},
-            method="POST",
-        )
+        # 豆包 Seed 系列默认先“深度思考”再回答，语音对话会很慢，这里关掉；不支持这个参数的模型会自动去掉重试
+        if provider == "doubao" and cfg.get("doubao_thinking", "disabled") != "enabled":
+            payload["thinking"] = {"type": "disabled"}
         try:
-            upstream = urllib.request.urlopen(req, timeout=60)
+            upstream = self._open_chat(p["url"], key, payload)
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:500]
-            self._json(502, {"error": f"{provider} 返回错误 {e.code}：{detail}"})
-            return
+            if "thinking" in payload and e.code == 400 and "thinking" in detail.lower():
+                payload.pop("thinking")
+                try:
+                    upstream = self._open_chat(p["url"], key, payload)
+                except urllib.error.HTTPError as e2:
+                    detail = e2.read().decode("utf-8", "replace")[:500]
+                    self._json(502, {"error": f"{provider} 返回错误 {e2.code}：{detail}"})
+                    return
+                except Exception as e2:
+                    self._json(502, {"error": f"连不上 {provider}：{e2}"})
+                    return
+            else:
+                self._json(502, {"error": f"{provider} 返回错误 {e.code}：{detail}"})
+                return
         except Exception as e:
             msg = f"连不上 {provider}：{e}"
             if "CERTIFICATE_VERIFY_FAILED" in str(e):
@@ -165,6 +209,110 @@ class Handler(SimpleHTTPRequestHandler):
         finally:
             upstream.close()
         self.close_connection = True
+
+    # ---------- 火山引擎：语音合成（贾维斯的声音） ----------
+    def _tts(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(min(length, 100000)) or b"{}")
+            text = str(body.get("text", "")).strip()[:600]
+        except Exception:
+            return self._json(400, {"error": "请求格式不对"})
+        cfg = load_config()
+        auth = volc_auth(cfg)
+        if not auth:
+            return self._json(400, {"error": "config.json 里还没填火山引擎的 volc_api_key，或 volc_app_id + volc_access_token"})
+        if not text:
+            return self._json(400, {"error": "没有要朗读的文字"})
+        try:
+            speed = float(cfg.get("volc_speed", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            speed = 1.0
+        speaker = (cfg.get("volc_voice_type", "") or DEFAULT_VOICE).strip()
+        audio_params = {"format": "mp3", "sample_rate": 24000, "speech_rate": max(-50, min(100, round((speed - 1) * 100)))}
+        payload = {"user": {"uid": "jarvis-boss"}, "req_params": {"text": text, "speaker": speaker, "audio_params": audio_params}}
+        err = "没有返回音频"
+        for resource in tts_resources(cfg, speaker):
+            audio, err = self._tts_call(auth, resource, payload)
+            if audio:
+                break
+        else:
+            return self._json(502, {"error": f"火山引擎语音合成失败：{err}（音色 {speaker}，可能是这个音色在你的账号里还没开通）"})
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Content-Length", str(len(audio)))
+        self.end_headers()
+        self.wfile.write(audio)
+
+    @staticmethod
+    def _open_chat(url, key, payload):
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
+                                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
+        return urllib.request.urlopen(req, timeout=60)
+
+    @staticmethod
+    def _tts_call(auth, resource, payload):
+        """调用 V3 单向流式合成，把分块返回的音频拼成一个完整 mp3。返回 (音频, 错误信息)。"""
+        headers = {"Content-Type": "application/json", "X-Api-Resource-Id": resource, "X-Api-Request-Id": str(uuid.uuid4()), **auth}
+        req = urllib.request.Request(VOLC_TTS_URL, data=json.dumps(payload).encode("utf-8"), method="POST", headers=headers)
+        audio = bytearray()
+        try:
+            with urllib.request.urlopen(req, timeout=40) as r:
+                for line in r:
+                    line = line.strip()
+                    if line.startswith(b"data:"):
+                        line = line[5:].strip()
+                    if not line or not line.startswith(b"{"):
+                        continue
+                    msg = json.loads(line)
+                    code = msg.get("code", 0)
+                    if msg.get("data"):
+                        audio += base64.b64decode(msg["data"])
+                    if code not in (0, 20000000):
+                        return None, f"{code} {msg.get('message', '')}"
+        except urllib.error.HTTPError as e:
+            body = e.read()[:300].decode("utf-8", "replace")
+            return None, f"HTTP {e.code} {e.headers.get('X-Api-Message', '')} {body}".strip()
+        except Exception as e:
+            return None, f"连不上：{e}"
+        return (bytes(audio), "") if audio else (None, "没有返回音频")
+
+    # ---------- 火山引擎：语音识别（按住空格说的话） ----------
+    def _asr(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 44 or length > 20 * 1024 * 1024:
+            return self._json(400, {"error": "录音太短或太长"})
+        audio = self.rfile.read(length)
+        cfg = load_config()
+        auth = volc_auth(cfg)
+        if not auth:
+            return self._json(400, {"error": "config.json 里还没填火山引擎的 volc_api_key，或 volc_app_id + volc_access_token"})
+        payload = {"user": {"uid": "jarvis-boss"}, "audio": {"data": base64.b64encode(audio).decode(), "format": "wav"},
+                   "request": {"model_name": "bigmodel", "enable_itn": True, "enable_punc": True}}
+        req = urllib.request.Request(VOLC_ASR_URL, data=json.dumps(payload).encode("utf-8"), method="POST", headers={
+            "Content-Type": "application/json", **auth,
+            "X-Api-Resource-Id": "volc.bigasr.auc_turbo", "X-Api-Request-Id": str(uuid.uuid4()), "X-Api-Sequence": "-1"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                code = r.headers.get("X-Api-Status-Code", "")
+                msg = r.headers.get("X-Api-Message", "")
+                res = json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            code, msg, res = e.headers.get("X-Api-Status-Code", str(e.code)), e.headers.get("X-Api-Message", ""), self._read_err(e)
+        except Exception as e:
+            return self._json(502, {"error": f"连不上火山引擎语音识别：{e}"})
+        if code == "20000003":          # 没检测到说话
+            return self._json(200, {"text": ""})
+        if code and code != "20000000":
+            return self._json(502, {"error": f"火山引擎语音识别失败（{code}）：{msg or res}"})
+        self._json(200, {"text": ((res.get("result") or {}).get("text") or "").strip()})
+
+    @staticmethod
+    def _read_err(e):
+        try:
+            return json.loads(e.read() or b"{}")
+        except Exception:
+            return {"error": f"HTTP {e.code}"}
 
     def _safe_static(self, path):
         """只放行 themes/ 和 vendor/ 目录里的图片、视频和脚本，且不能跳出这两个目录。"""

@@ -3,5 +3,10 @@
   "deepseek_api_key": "在这里填 DeepSeek 的 API Key",
   "deepseek_model": "deepseek-chat",
   "doubao_api_key": "在这里填火山方舟（豆包）的 API Key",
-  "doubao_model": "在这里填豆包的模型名或接入点 ID"
+  "doubao_model": "在这里填豆包的模型名或接入点 ID",
+  "volc_api_key": "在这里填火山引擎语音的 API Key（新版控制台）",
+  "volc_app_id": "旧版控制台才填：APPID",
+  "volc_access_token": "旧版控制台才填：Access Token（不是 Secret Key）",
+  "volc_voice_type": "zh_male_M392_conversation_wvae_bigtts",
+  "volc_speed": 1.0
 }

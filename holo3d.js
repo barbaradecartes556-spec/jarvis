@@ -69,22 +69,43 @@ const additive = { transparent: true, depthWrite: false, blending: THREE.Additiv
 /* ---------- 2. 全息外壳：边缘亮、中间透、扫描线、偶尔闪烁 ---------- */
 const shellMat = new THREE.ShaderMaterial({ uniforms: { ...uniforms, uOpacity: { value: 1 } }, ...additive, side: THREE.DoubleSide,
   vertexShader: `
-    varying vec3 vN, vV; varying float vY;
+    varying vec3 vN, vV; varying float vY; varying vec3 vP;
     void main() {
+      vP = position;
       vN = normalize(normalMatrix * normal);
       vec4 mv = modelViewMatrix * vec4(position, 1.0); vV = normalize(-mv.xyz);
       vY = (modelMatrix * vec4(position, 1.0)).y;
       gl_Position = projectionMatrix * mv;
     }`,
   fragmentShader: `
-    uniform vec3 uColor; uniform float uTime, uOpacity, uAmp, uBoost; varying vec3 vN, vV; varying float vY;
+    uniform vec3 uColor; uniform float uTime, uOpacity, uAmp, uBoost; varying vec3 vN, vV; varying float vY; varying vec3 vP;
     float h(float x) { return fract(sin(x) * 43758.5453); }
+    float h2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    // 六边形蜂窝：返回到格子边缘的距离和格子编号
+    vec3 hex(vec2 p) {
+      vec2 r = vec2(1., 1.732), hr = r * .5;
+      vec2 a = mod(p, r) - hr, b = mod(p - hr, r) - hr;
+      vec2 g = dot(a, a) < dot(b, b) ? a : b;
+      vec2 id = p - g;
+      vec2 q = abs(g); float e = .5 - max(dot(q, normalize(r)), q.x);
+      return vec3(e, id);
+    }
     void main() {
       float f = pow(1.0 - abs(dot(vN, vV)), 4.0);
       float scan = .55 + .45 * smoothstep(.35, .5, fract(vY * 22.0 - uTime * 1.2));
       float glitch = step(.94, h(floor(uTime * 9.0))) * .5;
-      float a = (f * .9 + .004 + uAmp * .06) * scan * (1.0 - glitch) * uOpacity * uBoost;
-      gl_FragColor = vec4(uColor, a);
+      // 能量护盾：球面坐标上铺蜂窝，格子随机点亮，说话时从赤道向两极一圈圈扩散
+      vec3 n = normalize(vP);
+      vec2 uv = vec2(atan(n.z, n.x) * 3.0, asin(n.y) * 6.0);
+      vec3 hx = hex(uv * 2.2);
+      float edge = smoothstep(.06, .0, hx.x);
+      float cell = h2(hx.yz);
+      float blink = smoothstep(.75, 1., sin(uTime * (1. + cell * 2.) + cell * 40.));
+      float ripple = smoothstep(.15, .0, abs(fract(abs(n.y) * 1.5 - uTime * .9) - .5)) * uAmp * .7;
+      float front = step(0., dot(vN, vV));               // 只在朝向镜头的一面画蜂窝，避免前后叠加发白
+      float hexA = front * (edge * (.06 + .3 * f + ripple * .3) + blink * edge * .12) + ripple * .03;
+      float a = (f * .9 + .004 + uAmp * .06 + hexA) * scan * (1.0 - glitch) * uOpacity * uBoost;
+      gl_FragColor = vec4(mix(uColor, vec3(1.), ripple * .3), a);
     }`,
 });
 const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(1.28, 6), shellMat);
@@ -200,8 +221,13 @@ const pad = new THREE.Mesh(new THREE.CircleGeometry(1.25, 64), padMat); pad.rota
 const beamMat = new THREE.ShaderMaterial({ uniforms, ...additive, side: THREE.DoubleSide,
   vertexShader: `varying vec2 vU; void main(){ vU = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
   fragmentShader: `uniform vec3 uColor; uniform float uTime, uAmp; varying vec2 vU;
-    void main(){ float a = pow(1. - vU.y, 1.6) * .16 * (.75 + .25 * sin(vU.x * 70. + uTime * 3.)) * (.85 + uAmp * .6);
-      gl_FragColor = vec4(uColor, a); }`,
+    float h(float x){ return fract(sin(x * 91.7) * 43758.5453); }
+    void main(){
+      float col = floor(vU.x * 140.);
+      float streak = smoothstep(.55, 1., h(col)) * (.5 + .5 * sin(vU.y * 9. - uTime * (2. + h(col + 3.) * 4.) + h(col) * 30.));
+      float flow = .75 + .25 * sin(vU.x * 70. + uTime * 3.);
+      float a = pow(1. - vU.y, 1.4) * (.13 * flow + .22 * streak) * (.85 + uAmp * .8);
+      gl_FragColor = vec4(mix(uColor, vec3(1.), streak * .25), a); }`,
 });
 const BEAM_H = 1.5;
 const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.25, .5, BEAM_H, 96, 1, true), beamMat);
@@ -218,6 +244,87 @@ beam.position.y = BASE_Y + BEAM_H / 2; scene.add(beam);
     fragmentShader: `uniform vec3 uColor; varying float vA; void main(){ float d = length(gl_PointCoord-.5); if (d > .5) discard; gl_FragColor = vec4(uColor, smoothstep(.5,0.,d) * vA); }`,
   });
   scene.add(new THREE.Points(g, m));
+}
+
+/* ---------- 6. 激光扫描面：一片光从下往上扫过球体，切面处亮一圈 ---------- */
+const sweepMat = new THREE.ShaderMaterial({ uniforms: { ...uniforms, uR: { value: 1 } }, ...additive, side: THREE.DoubleSide,
+  vertexShader: `varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `uniform vec3 uColor; uniform float uR, uBoost; varying vec2 vP;
+    void main(){ float d = length(vP);
+      float rim = smoothstep(.035, .0, abs(d - uR)) * .9;
+      float fill = smoothstep(uR, uR * .2, d) * .02;
+      float grid = step(.92, fract(vP.x * 6.)) + step(.92, fract(vP.y * 6.));
+      float a = (rim * .8 + fill + grid * .02 * step(d, uR)) * uBoost;
+      gl_FragColor = vec4(mix(uColor, vec3(1.), rim * .5), a); }`,
+});
+const sweep = new THREE.Mesh(new THREE.CircleGeometry(1.35, 96), sweepMat);
+sweep.rotation.x = -Math.PI / 2; holo.add(sweep);
+function updateSweep(t) {
+  const k = (t * .22) % 1, y = (k < .5 ? k * 2 : 2 - k * 2) * 2.3 - 1.15;   // 上下往返
+  sweep.position.y = y;
+  sweepMat.uniforms.uR.value = Math.sqrt(Math.max(0, 1.28 * 1.28 - y * y));
+  sweep.visible = Math.abs(y) < 1.27;
+}
+
+/* ---------- 7. 环绕卫星：带拖尾的光点沿轨道飞 ---------- */
+const sats = [];
+for (const [r, rx, rz, sp, len] of [[1.55, 1.25, 0, .9, 60], [1.85, .4, .6, -.7, 50], [2.05, 1.9, .3, .55, 70], [1.7, -.8, -.4, -1.1, 40]]) {
+  const N = len, geo = new THREE.BufferGeometry(), pos = new Float32Array(N * 3), al = new Float32Array(N);
+  for (let i = 0; i < N; i++) al[i] = Math.pow(1 - i / N, 2);
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('aA', new THREE.BufferAttribute(al, 1));
+  const mat = new THREE.ShaderMaterial({ uniforms, ...additive,
+    vertexShader: `attribute float aA; varying float vA; void main(){ vA = aA; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+    fragmentShader: `uniform vec3 uColor; uniform float uBoost; varying float vA; void main(){ gl_FragColor = vec4(mix(uColor, vec3(1.), vA*.5), vA * .9 * uBoost); }` });
+  const line = new THREE.Line(geo, mat);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(.028, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  const pv = new THREE.Group(); pv.rotation.set(rx, 0, rz); pv.add(line, head); holo.add(pv);
+  sats.push({ r, sp, N, pos, geo, head, ph: Math.random() * 6.28 });
+}
+function updateSats(t, k) {
+  for (const s of sats) {
+    const a0 = s.ph + t * s.sp * k;
+    for (let i = 0; i < s.N; i++) { const a = a0 - i * .018 * Math.sign(s.sp); s.pos.set([Math.cos(a) * s.r, Math.sin(a) * s.r, 0], i * 3); }
+    s.geo.attributes.position.needsUpdate = true;
+    s.head.position.set(Math.cos(a0) * s.r, Math.sin(a0) * s.r, 0);
+  }
+}
+
+/* ---------- 8. 环绕文字带：一圈滚动的系统数据，像钢铁侠头盔里的 HUD ---------- */
+function textBand(lines, r, h, y, tilt, speed, op) {
+  const c = document.createElement('canvas'); c.width = 4096; c.height = 64;
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.font = '600 34px "SF Mono", Menlo, Consolas, monospace'; g.textBaseline = 'middle';
+  let x = 10; const s = lines.join('   //   ') + '   //   ';
+  while (x < c.width) { g.fillText(s, x, 32); x += g.measureText(s).width; }
+  const tex = new THREE.CanvasTexture(c); tex.wrapS = THREE.RepeatWrapping; tex.anisotropy = 4;
+  const mat = new THREE.ShaderMaterial({ uniforms: { ...uniforms, uTex: { value: tex }, uOp: { value: op } }, ...additive, side: THREE.DoubleSide,
+    vertexShader: `varying vec2 vU; varying float vF; void main(){ vU = uv; vec4 mv = modelViewMatrix*vec4(position,1.);
+      vF = dot(normalize(normalMatrix*vec3(position.x,0.,position.z)), normalize(-mv.xyz)); gl_Position = projectionMatrix*mv; }`,
+    fragmentShader: `uniform sampler2D uTex; uniform vec3 uColor; uniform float uOp, uBoost; varying vec2 vU; varying float vF;
+      void main(){ float t = texture2D(uTex, vU).a; float front = smoothstep(-.2, .5, vF);
+        gl_FragColor = vec4(uColor, t * uOp * (.25 + .75 * front) * uBoost); }`,
+  });
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 160, 1, true), mat);
+  const pv = new THREE.Group(); pv.position.y = y; pv.rotation.set(tilt, 0, tilt * .3); pv.add(m); holo.add(pv);
+  return { mesh: m, speed };
+}
+const bands = [
+  textBand(['J.A.R.V.I.S. ONLINE', 'NEURAL LINK 98.7%', 'ARC OUTPUT 3.2 GJ/s', 'VOICE CHANNEL SECURE', 'SAT UPLINK OK', 'THREAT LEVEL: MINIMAL'], 1.5, .11, .5, .18, .12, 1.6),
+  textBand(['SYS.CORE 0x7F3A', 'MEM 64.2 / 128 TB', 'LAT 12ms', 'TEMP 36.4C', 'PROTOCOL: HOUSE PARTY', 'STARK INDUSTRIES'], 1.62, .09, -.55, -.14, -.08, 1.2),
+];
+
+/* ---------- 9. 频谱环：说话时一圈竖条随声音跳 ---------- */
+const BARS = 96, barGeo = new THREE.BufferGeometry(), barPos = new Float32Array(BARS * 6);
+barGeo.setAttribute('position', new THREE.BufferAttribute(barPos, 3));
+const barMat = new THREE.LineBasicMaterial({ color: 0xffffff, opacity: .8, ...additive });
+const barPivot = new THREE.Group(); barPivot.position.y = -1.32; barPivot.add(new THREE.LineSegments(barGeo, barMat)); holo.add(barPivot);
+function updateBars(t, amp) {
+  for (let i = 0; i < BARS; i++) {
+    const a = i / BARS * Math.PI * 2, r = 1.1;
+    const k = Math.abs(Math.sin(i * 1.7 + t * 9) * Math.sin(i * .37 - t * 5) + .3 * Math.sin(i * 4.1 + t * 13));
+    const hgt = .02 + amp * k * .55;
+    barPos.set([Math.cos(a) * r, 0, Math.sin(a) * r, Math.cos(a) * r, hgt, Math.sin(a) * r], i * 6);
+  }
+  barGeo.attributes.position.needsUpdate = true;
 }
 
 /* ---------- 后期：泛光 ---------- */
@@ -291,7 +398,9 @@ function tick() {
   const themed = document.body.dataset.theme && document.body.dataset.theme !== 'grid';
   uniforms.uBoost.value += ((themed ? 1.7 : 1) - uniforms.uBoost.value) * .1;
   bloom.strength = (themed ? .7 : .45) + amp * .25;
-  updateWave(t, amp);
+  updateWave(t, amp); updateSweep(t); updateSats(t, speedK); updateBars(t, amp);
+  for (const b of bands) b.mesh.rotation.y += dt * b.speed * speedK;
+  barMat.color.copy(uniforms.uColor.value).lerp(new THREE.Color(1, 1, 1), .4);
   waveMat.color.copy(uniforms.uColor.value).lerp(new THREE.Color(1, 1, 1), .3);
   wave2.material.color.copy(uniforms.uColor.value);
   for (const a of arcs) { a.m.rotation.z += dt * a.sp * speedK; a.m.material.color.copy(uniforms.uColor.value); }

@@ -222,7 +222,7 @@
 <div class="scan"></div>
 
 <header>
-  <div class="logo">J.A.R.V.I.S.<small>JUST A RATHER VERY INTELLIGENT SYSTEM · v1.7.6</small></div>
+  <div class="logo">J.A.R.V.I.S.<small>JUST A RATHER VERY INTELLIGENT SYSTEM · v1.9.1</small></div>
   <div class="hud-right">
     <span><span class="k">LINK</span><span id="link">—</span></span>
     <span><span class="k">TIME</span><span id="clock">--:--:--</span></span>
@@ -382,6 +382,7 @@ function initRecognition() {
 }
 function startListening() {
   if (state !== 'idle') return;
+  if (useVolcASR()) { unlockSpeech(); setState('listening'); showSub('', true); startVolcRec(); return; }
   if (!SR) { addMsg('err', '这个浏览器不支持语音识别，请用 Chrome 打开，或者直接打字。'); return; }
   unlockSpeech();
   rec = rec || initRecognition();
@@ -391,6 +392,7 @@ function startListening() {
 }
 function stopListening() {
   if (state !== 'listening') return;
+  if (useVolcASR()) { setState('thinking'); finishVolcRec(); return; }
   wantSend = true;
   setState('thinking');
   try { rec.stop(); } catch (e) { rec.onend(); }
@@ -436,6 +438,7 @@ function loadVoices() {
 }
 speechSynthesis.onvoiceschanged = loadVoices; loadVoices();
 function unlockSpeech() {   // Chrome 要求先有一次用户操作，才允许朗读
+  try { ttsCtx = ttsCtx || new AudioContext(); ttsCtx.resume(); } catch {}
   if (speechUnlocked) return; speechUnlocked = true;
   const u = new SpeechSynthesisUtterance(''); u.volume = 0; speechSynthesis.speak(u);
 }
@@ -443,6 +446,10 @@ const speakable = t => t.replace(/```[\s\S]*?```/g, '').replace(/[*#`>_~|\[\]]/g
 let pendingUtterances = 0, streamDone = true, turnId = 0;
 const liveUtterances = new Set();   // 保存朗读对象，防止 Chrome 提前回收导致“说完了”的通知丢失
 function speak(text, myTurn) {
+  if (useVolcTTS()) { const t = speakable(text); if (t) speakVolc(t, myTurn); return; }
+  speakChrome(text, myTurn);
+}
+function speakChrome(text, myTurn) {
   const t = speakable(text); if (!t || !speechSynthesis.getVoices().length) return;  // 没有可用声音时只显示文字
   const u = new SpeechSynthesisUtterance(t);
   const v = voices.find(v => v.name === settings.voice); if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'zh-CN';
@@ -453,6 +460,104 @@ function speak(text, myTurn) {
   liveUtterances.add(u); pendingUtterances++;
   speechSynthesis.speak(u);
 }
+/* ========== 火山引擎语音（贾维斯的声音 + 识别），在 config.json 里填了 volc_* 才启用 ========== */
+const useVolcTTS = () => !!(serverStatus?.volc?.ready && serverStatus.volc.tts);
+const useVolcASR = () => !!(serverStatus?.volc?.ready && serverStatus.volc.asr);
+let ttsChain = Promise.resolve(), ttsAudio = null, ttsCtx = null, ttsAnalyser = null, ttsWarned = false;
+const ttsBuf = new Uint8Array(256);
+function ttsLevel() {
+  if (!ttsAnalyser) return 0;
+  ttsAnalyser.getByteTimeDomainData(ttsBuf);
+  let s = 0; for (const v of ttsBuf) s += (v - 128) ** 2;
+  return Math.min(1, Math.sqrt(s / ttsBuf.length) / 25);
+}
+function playClip(blob, t, myTurn) {
+  return new Promise(resolve => {
+    const a = new Audio(URL.createObjectURL(blob));
+    try {
+      ttsCtx = ttsCtx || new AudioContext();
+      if (!ttsAnalyser) { ttsAnalyser = ttsCtx.createAnalyser(); ttsAnalyser.fftSize = 512; ttsAnalyser.connect(ttsCtx.destination); }
+      ttsCtx.createMediaElementSource(a).connect(ttsAnalyser); ttsCtx.resume();
+    } catch (e) { /* 拿不到音量也能正常播放 */ }
+    let done = false;
+    const finish = () => { if (done) return; done = true; URL.revokeObjectURL(a.src); if (ttsAudio === a) ttsAudio = null; resolve(); };
+    a.onplay = () => { if (myTurn === turnId) { setState('speaking'); showSub(t); } };
+    a.onended = a.onerror = a.onpause = finish;
+    if (myTurn !== turnId) return finish();
+    ttsAudio = a; a.play().catch(finish);
+  });
+}
+function speakVolc(t, myTurn) {
+  pendingUtterances++;
+  // 先并行请求音频，再按顺序播放，句子之间不卡顿
+  const clip = fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: t }) })
+    .then(async r => { if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || ('HTTP ' + r.status)); } return r.blob(); });
+  clip.catch(() => {});
+  ttsChain = ttsChain.then(async () => {
+    if (myTurn !== turnId) return;
+    let blob;
+    try { blob = await clip; } catch (e) {
+      if (myTurn !== turnId) return;
+      if (!ttsWarned) { ttsWarned = true; addMsg('err', '贾维斯的声音（火山引擎）出错了，这次先用浏览器自带的声音：' + e.message); }
+      speakChrome(t, myTurn); return;
+    }
+    await playClip(blob, t, myTurn);
+  }).finally(() => { if (myTurn !== turnId) return; pendingUtterances--; maybeFinish(); });
+}
+function stopVolcAudio() { ttsChain = Promise.resolve(); if (ttsAudio) { try { ttsAudio.pause(); } catch {} ttsAudio = null; } }
+
+// 按住空格录音 → 16kHz WAV → 本地服务 → 火山引擎识别
+let recChunks = [], recNode = null, recOn = false;
+async function startVolcRec() {
+  recChunks = []; recOn = false;
+  await startMeter();
+  if (state !== 'listening') return;
+  if (!meterStream) { addMsg('err', '没拿到麦克风权限。请点地址栏左侧的图标允许麦克风，然后刷新页面。'); setState('idle'); showSub(''); return; }
+  if (!recNode) {
+    recNode = meterCtx.createScriptProcessor(4096, 1, 1);
+    meterCtx.createMediaStreamSource(meterStream).connect(recNode);
+    const mute = meterCtx.createGain(); mute.gain.value = 0; recNode.connect(mute); mute.connect(meterCtx.destination);
+    recNode.onaudioprocess = e => { if (recOn) recChunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+  }
+  recOn = true;
+}
+function encodeWav(chunks, inRate) {
+  let n = 0; for (const c of chunks) n += c.length;
+  const all = new Float32Array(n); let o = 0; for (const c of chunks) { all.set(c, o); o += c.length; }
+  const ratio = inRate / 16000, len = Math.floor(n / ratio);
+  const view = new DataView(new ArrayBuffer(44 + len * 2));
+  const str = (p, s) => { for (let i = 0; i < s.length; i++) view.setUint8(p + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); view.setUint32(4, 36 + len * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, 16000, true); view.setUint32(28, 32000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  str(36, 'data'); view.setUint32(40, len * 2, true);
+  for (let i = 0; i < len; i++) {
+    const a = Math.floor(i * ratio), b = Math.min(n, Math.floor((i + 1) * ratio));
+    let s = 0; for (let j = a; j < b; j++) s += all[j]; s /= Math.max(1, b - a);
+    view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, s)) * 0x7fff, true);
+  }
+  return new Blob([view], { type: 'audio/wav' });
+}
+async function finishVolcRec() {
+  recOn = false; stopMeter();
+  const myTurn = turnId, rate = meterCtx ? meterCtx.sampleRate : 48000;
+  let n = 0; for (const c of recChunks) n += c.length;
+  if (n < rate * 0.3) { setState('idle'); showSub(''); addMsg('err', '录音太短了。Boss 按住空格说完整句话再松开。'); return; }
+  showSub('识别中……', true);
+  try {
+    const r = await fetch('/api/asr', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: encodeWav(recChunks, rate) });
+    const j = await r.json().catch(() => ({}));
+    if (myTurn !== turnId || state !== 'thinking') return;
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    const text = (j.text || '').trim();
+    if (text) { showSub(text, true); ask(text); return; }
+    setState('idle'); showSub(''); addMsg('err', '没听清，Boss 可以按住空格再说一次。');
+  } catch (e) {
+    if (myTurn !== turnId) return;
+    setState('idle'); showSub(''); addMsg('err', '语音识别出错：' + e.message + '。可以先打字聊天。');
+  }
+}
+
 function maybeFinish() {
   if (streamDone && pendingUtterances <= 0 && (state === 'speaking' || state === 'thinking')) { setState('idle'); setTimeout(() => state === 'idle' && showSub(''), 2500); }
 }
@@ -535,7 +640,7 @@ function interrupt() {
   if (state !== 'thinking' && state !== 'speaking') return;
   turnId++;                       // 让旧回答的回调全部失效
   if (controller) controller.abort();
-  speechSynthesis.cancel(); liveUtterances.clear();
+  speechSynthesis.cancel(); liveUtterances.clear(); stopVolcAudio();
   if (rec && wantSend) { wantSend = false; try { rec.abort(); } catch {} }
   pendingUtterances = 0; streamDone = true;
   setState('idle'); showSub('');
@@ -589,6 +694,9 @@ function closeSettings() {
 function updateProviderNote() {
   const p = serverStatus?.providers?.[$('provider').value];
   $('providerNote').textContent = !serverStatus ? '本地服务没连上。' : p.has_key ? `已配置，模型：${p.model || '（未填写）'}` : `还没填这个服务的 Key。请在 ${serverStatus.config || '个人文件夹/Jarvis/config.json'} 里填好，保存后刷新页面。`;
+  if (serverStatus) $('providerNote').textContent += serverStatus.volc?.ready
+    ? `　语音：火山引擎（${serverStatus.volc.voice}），下面的“声音/语速/音调”只在火山出错时才用。`
+    : '　语音：浏览器自带。想要贾维斯的声音，在 config.json 里填 volc_app_id 和 volc_access_token。';
 }
 $('openSettings').onclick = openSettings; $('closeSettings').onclick = closeSettings;
 $('provider').onchange = updateProviderNote;
@@ -597,7 +705,7 @@ $('pitch').oninput = e => $('pitchV').textContent = e.target.value;
 $('testVoice').onclick = () => {
   settings.voice = $('voice').value; settings.rate = +$('rate').value; settings.pitch = +$('pitch').value;
   if (state !== 'idle') return;
-  speechSynthesis.cancel(); unlockSpeech(); pendingUtterances = 0; streamDone = true; speak('Boss，随时为您效劳。', turnId);
+  speechSynthesis.cancel(); stopVolcAudio(); unlockSpeech(); pendingUtterances = 0; streamDone = true; speak('Boss，随时为您效劳。', turnId);
 };
 $('clearHistory').onclick = () => { if (confirm('确定清空所有对话记录吗？“关于 Boss”的备忘会保留。')) { history = []; LS.set('history', history); renderHistory(); } };
 async function updateLink() {
@@ -609,14 +717,14 @@ async function updateLink() {
     }
     if (!settings.provider) { settings.provider = serverStatus.default_provider || 'deepseek'; saveSettings(); }
     const p = serverStatus.providers[settings.provider];
-    $('link').textContent = (settings.provider === 'doubao' ? 'DOUBAO' : 'DEEPSEEK') + (p?.has_key ? ' · ONLINE' : ' · NO KEY');
+    $('link').textContent = (settings.provider === 'doubao' ? 'DOUBAO' : 'DEEPSEEK') + (p?.has_key ? ' · ONLINE' : ' · NO KEY') + (serverStatus.volc?.ready ? ' · VOICE' : '');
   } catch { serverStatus = null; $('link').textContent = 'OFFLINE'; if (!settings.provider) settings.provider = 'deepseek'; }
 }
 
 
 /* ========== 背景主题 ========== */
 const THEMES = ['grid', 'nebula', 'cliffs'];
-const APP_VERSION = '1.7.6';
+const APP_VERSION = '1.9.1';
 let themeRGB = '79,227,255', holoRGB = themeRGB, holoListenRGB = '255,181,71';
 function applyTheme(t) {
   if (!THEMES.includes(t)) t = 'grid';
@@ -725,7 +833,7 @@ function frame(now) {
   let target = 0.08 + Math.sin(t * 1.5) * 0.03;
   if (state === 'listening') target = 0.12 + micLevel() * 0.9;
   if (state === 'thinking') target = 0.18 + Math.sin(t * 8) * 0.08;
-  if (state === 'speaking') { speakPulse *= 0.9; target = 0.2 + speakPulse * 0.45 + Math.abs(Math.sin(t * 9)) * 0.15; }
+  if (state === 'speaking') { speakPulse *= 0.9; if (ttsAudio) speakPulse = Math.max(speakPulse, ttsLevel() * 1.4); target = 0.2 + speakPulse * 0.45 + Math.abs(Math.sin(t * 9)) * 0.15; }
   amp += (target - amp) * 0.15;
   rotY += state === 'thinking' ? 0.03 : 0.006;
   if (document.body.dataset.gl) { requestAnimationFrame(frame); return; }
