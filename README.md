@@ -9,18 +9,19 @@
 
 ## 界面预览
 
-![贾维斯 v1.9.2 金色星云主题实机截图](preview.png)
+以下为项目作者提供的三套主题实机截图。截图中的界面版本标识为 v1.9.1，当前仓库版本为 v1.9.2。
 
-*当前 v1.9.2 本地运行截图，展示金色星云主题、3D 全息球和空间背景。*
+### 经典网格
 
-<details>
-<summary>查看经典网格与宇宙悬崖主题</summary>
+![贾维斯经典网格主题](docs/images/grid.png)
 
-![贾维斯 v1.9.2 经典网格主题](docs/images/grid.png)
+### 金色星云
 
-![贾维斯 v1.9.2 宇宙悬崖主题](docs/images/cliffs.png)
+![贾维斯金色星云主题](docs/images/nebula.png)
 
-</details>
+### 宇宙悬崖
+
+![贾维斯宇宙悬崖主题](docs/images/cliffs.png)
 
 ## 它能做什么
 
