@@ -11,7 +11,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 USER_CONFIG = os.path.join(os.path.expanduser("~"), "Jarvis", "config.json")
 CONFIG_PATH = os.environ.get("JARVIS_CONFIG") or (USER_CONFIG if os.path.exists(USER_CONFIG) else os.path.join(HERE, "config.json"))
 PORT = int(os.environ.get("JARVIS_PORT", "8765"))
-VERSION = "1.9.1"
+VERSION = "1.9.2"
 
 PROVIDERS = {
     "deepseek": {
